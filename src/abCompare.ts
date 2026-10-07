@@ -1,7 +1,7 @@
 // riv_ab_compare: 2つの .riv を同条件でレンダーし、横/縦並びの1本の GIF/APNG に合成する
 // (目視レビュー用。riv_visual_diff の画素差分とは役割が異なる — あちらは同一素材の定量比較、
 // こちらは別々の素材を並べて眺めるためのもの)。
-import { readFileSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdirSync, existsSync } from "./workspaceFs.js";
 import { resolve, join, dirname, basename, extname } from "node:path";
 import type { RiveHost } from "./riveHost.js";
 import { encodeGif } from "./gif.js";

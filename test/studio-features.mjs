@@ -1,3 +1,4 @@
+import { studioFetch, rememberStudio, studioToken } from "./studio-client.mjs";
 // 軽量テスト: Studio の新規エンドポイント(アセット差し替え/スナップショット履歴)を
 // HTTP経由で直接検証する。riveHost(headless Chromium)は起動しない — サーバー側の
 // バイナリ処理(rivAssets.replaceAssetBytes)とファイルI/O(/api/snapshots系)のみが対象。
@@ -73,7 +74,14 @@ const distAssets = pathToFileURL(join(root, "dist", "rivAssets.js")).href;
 const distEdit = pathToFileURL(join(root, "dist", "rivEdit.js")).href;
 const distWriter = pathToFileURL(join(root, "dist", "rivWriter.js")).href;
 
-const { startStudio, stopStudio } = await import(distStudio);
+const scratch = mkdtempSync(join(tmpdir(), "rive-mcp-studio-test-"));
+process.env.RIVE_MCP_WORKSPACE = scratch;
+const { startStudio: startPrivateStudio, stopStudio } = await import(distStudio);
+async function startStudio(opts) {
+  const handle = await startPrivateStudio(opts);
+  rememberStudio(handle.url);
+  return handle;
+}
 const { readRiv } = await import(distBinary);
 const { extractAssets } = await import(distAssets);
 const { editRiv } = await import(distEdit);
@@ -91,7 +99,6 @@ const PNG_1x1 = makePng(1, 1, [255, 0, 0, 255]);
 // 2x2 の最小PNG(緑)。「2回目の差し替え」用(スナップショット復元で消えることを確認する対象)。
 const PNG_2x2 = makePng(2, 2, [0, 255, 0, 255]);
 
-const scratch = mkdtempSync(join(tmpdir(), "rive-mcp-studio-test-"));
 const workRiv = join(scratch, "e2e-image.riv");
 writeFileSync(workRiv, readFileSync(join(root, "samples", "e2e-image.riv")));
 const origBytes = readFileSync(workRiv);
@@ -101,13 +108,13 @@ const PORT = 8799;
 let handle = null;
 
 async function api(path, opts) {
-  const res = await fetch(`http://localhost:${PORT}${path}`, opts);
+  const res = await studioFetch(`http://localhost:${PORT}${path}`, opts);
   return { status: res.status, json: await res.json() };
 }
 
 try {
-  handle = startStudio({ rivPath: workRiv, port: PORT });
-  check("studio started", !!handle.url, handle.url);
+  handle = await startStudio({ rivPath: workRiv, port: PORT });
+  check("studio started", !!handle.url, new URL(handle.url).origin);
 
   // ---- アセット差し替え ----------------------------------------------------
   const list1 = await api("/api/assets");
@@ -181,7 +188,7 @@ try {
     new Promise((resolve, reject) => {
       const s = netConnect(PORT, "127.0.0.1", () => {
         s.write(Buffer.from(
-          `POST /chat HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: ${bodyBuf.length}\r\nConnection: close\r\n\r\n`,
+          `POST /chat HTTP/1.1\r\nHost: 127.0.0.1:${PORT}\r\nAuthorization: Bearer ${studioToken(PORT)}\r\nContent-Type: application/json\r\nContent-Length: ${bodyBuf.length}\r\nConnection: close\r\n\r\n`,
           "latin1",
         ));
         let i = 0;
@@ -199,7 +206,7 @@ try {
     });
   await rawPost(Buffer.from(JSON.stringify({ text: "A:" + JP, role: "assistant" }), "utf8"));
   await rawPost(cp932(JSON.stringify({ text: "B:" + JP, role: "assistant" })));
-  const chatRes = await (await fetch(`http://localhost:${PORT}/chat`)).json();
+  const chatRes = await (await studioFetch(`http://localhost:${PORT}/chat`)).json();
   const texts = (chatRes.chat ?? []).map((m) => m.text);
   check("UTF-8 body split at every byte boundary survives intact", texts.includes("A:" + JP), JSON.stringify(texts[0]));
   check("CP932 body is recovered instead of becoming mojibake", texts.includes("B:" + JP), JSON.stringify(texts[1]));
@@ -209,8 +216,8 @@ try {
   const vehiclesWork = join(scratch, "vehicles.riv");
   writeFileSync(vehiclesWork, readFileSync(join(root, "samples", "vehicles.riv")));
   const PORT2 = PORT + 1; // 別ポート: 直前サーバーのclose()はソケット解放を待たないため同一ポート即再利用はレースの元
-  const handle2 = startStudio({ rivPath: vehiclesWork, port: PORT2 });
-  const tree = await (await fetch(`http://localhost:${PORT2}/tree`)).json();
+  const handle2 = await startStudio({ rivPath: vehiclesWork, port: PORT2 });
+  const tree = await (await studioFetch(`http://localhost:${PORT2}/tree`)).json();
   const abNames = (tree.artboards ?? []).map((a) => a.name);
   check("multi-artboard file exposes both artboards via /tree", abNames.includes("Truck") && abNames.includes("Jeep"), JSON.stringify(abNames));
   handle2.close();
@@ -242,9 +249,9 @@ try {
   const kfWork = join(scratch, "e2e-keyframes.riv");
   writeFileSync(kfWork, readFileSync(join(root, "samples", "e2e-keyframes.riv")));
   const PORT3 = PORT + 2;
-  const handle3 = startStudio({ rivPath: kfWork, port: PORT3 });
+  const handle3 = await startStudio({ rivPath: kfWork, port: PORT3 });
   async function api3(path, opts) {
-    const res = await fetch(`http://localhost:${PORT3}${path}`, opts);
+    const res = await studioFetch(`http://localhost:${PORT3}${path}`, opts);
     return { status: res.status, json: await res.json() };
   }
 
@@ -405,9 +412,9 @@ try {
     const boneWork = join(scratch, "bone-test.riv");
     writeFileSync(boneWork, boneRivBytes);
     const PORT4 = PORT + 3;
-    const handle4 = startStudio({ rivPath: boneWork, port: PORT4 });
+    const handle4 = await startStudio({ rivPath: boneWork, port: PORT4 });
     async function api4(path, opts) {
-      const res = await fetch(`http://localhost:${PORT4}${path}`, opts);
+      const res = await studioFetch(`http://localhost:${PORT4}${path}`, opts);
       return { status: res.status, json: await res.json() };
     }
 

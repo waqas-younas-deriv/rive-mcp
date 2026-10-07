@@ -1,5 +1,7 @@
 # rive-mcp
 
+> **Hardened source-only fork.** Use the setup below, not `npx rive-mcp-server` or the upstream marketplace: those run a different package. See [security boundaries and limits](SECURITY.md).
+
 **Create, edit, inspect, render and live-preview Rive (`.riv`) animations from Claude — no Rive editor, no cloud, no subscription.**
 
 [日本語 README はこちら](./README.ja.md)
@@ -61,7 +63,7 @@ Rendering runs the **official Rive runtime** (`@rive-app/canvas-advanced` WASM) 
 | `riv_studio_notes` | Read the Studio's Agent chat (with auto-attached context: selection, artboard, animation, playback time) and post replies back into it |
 | `riv_ui_detect` | **Read a UI screenshot** — or, with `svgPath`, a Figma/Illustrator SVG: finds panels, text runs and pictures, returns a nested element tree with rects, corner radii and fill colours plus a numbered overlay PNG. Each element says how it would be rebuilt (`vector-panel` / `vector-shape` / `vector-text` / `raster`) and what it looks like (`panel` / `text` / `image` / `line`) as separate fields. Geometry only — it does not know a button from a card |
 | `riv_ui_prototype` | **Screenshot → animated `.riv` in one more call**: assign a role to each detected element and get a working prototype — vector rectangles where they can be rebuilt, image slices where they cannot, an entrance per role, hover and press on cards and buttons. Text is cut out with a real alpha matte where the colour model holds; where it does not, the element fades in place instead of moving, and the warnings say so |
-| `riv_setup` | **One-call environment setup**: installs the bundled `rive-design-guidelines` skill into `.claude/skills/` (project) or `~/.claude/skills/` (user) so the pro workflow auto-triggers — confirmation happens via the normal tool-permission prompt |
+| `riv_setup` | Disabled in this fork; explains how to review and install the bundled skill manually |
 
 ### Screenshot → animated prototype
 
@@ -115,31 +117,37 @@ The same workflow plus hand-authoring craft rules (bezier curves, easing semanti
 
 ## Quick start
 
-**Claude Code plugin (recommended)** — one install gets the MCP server, the design-guidelines skill, and the `rive-designer` agent:
-
-```
-/plugin marketplace add ODU33104/rive-mcp
-/plugin install rive-mcp@rive-tools
-```
-
-Or install from npm:
+Build this fork from a reviewed commit with Node.js 20+:
 
 ```bash
-npm install -g rive-mcp-server
-
-# Register with Claude Code (user scope = available in every project)
-claude mcp add --scope user rive -- rive-mcp
-```
-
-Or run from source:
-
-```bash
-git clone https://github.com/ODU33104/rive-mcp.git
+git clone https://github.com/waqas-younas-deriv/rive-mcp.git
 cd rive-mcp
-npm install
+npm ci --ignore-scripts
 npm run build
-claude mcp add --scope user rive -- node /absolute/path/to/rive-mcp/dist/index.js
+npm run test:security
 ```
+
+Create a **separate animation-only directory** and configure your MCP client to run the built file. Both paths must be absolute:
+
+```json
+{
+  "mcpServers": {
+    "rive": {
+      "command": "node",
+      "args": ["/absolute/path/to/rive-mcp/dist/index.js"],
+      "env": {
+        "RIVE_MCP_WORKSPACE": "/absolute/path/to/animation-workspace"
+      }
+    }
+  }
+}
+```
+
+The workspace must already exist. Relative tool paths resolve inside it. Keep credentials, source code, and client configuration outside it. Files inside it may be overwritten by editing tools. The server refuses to start without this setting, or with a home directory/filesystem root as the workspace. Hidden paths, `node_modules`, symlinks, hard-linked files, and paths outside the workspace are blocked.
+
+Studio binds only to `127.0.0.1`. Open the **complete private link** returned by `riv_studio`; a bare `localhost:8787` URL will not work. The link signs your browser into a session and removes its secret from the address bar. Do not share it. Restarting Studio invalidates it.
+
+The plugin configuration now points at this fork's local build and never downloads the upstream npm package. Prefer the explicit MCP configuration above; a marketplace cache containing only `plugin/` will not contain `../dist/` and will fail closed. Automatic `riv_setup` writes to client configuration are disabled; review and install any skill manually.
 
 A Chromium-based browser is auto-detected in this order (usually nothing to install):
 
