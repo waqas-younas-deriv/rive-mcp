@@ -1,7 +1,9 @@
 // Studio の実動作検証: 起動 → 実ブラウザで開いて描画確認 → 再ビルドAPI確認
 import { writeFileSync, readFileSync, existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
-import { startStudio, stopStudio } from "../dist/studio.js";
+import { studioFetch, rememberStudio } from "./studio-client.mjs";
+process.env.RIVE_MCP_WORKSPACE = process.cwd();
+const { startStudio, stopStudio } = await import("../dist/studio.js");
 import { chromium } from "playwright-core";
 
 // シーンJSON（スタジオの編集パネル用）
@@ -29,16 +31,17 @@ writeFileSync("samples/studio-scene.json", JSON.stringify(scene, null, 2));
 const { createRiv } = await import("../dist/rivWriter.js");
 writeFileSync("samples/studio-demo.riv", Buffer.from(createRiv(scene).bytes));
 
-const handle = startStudio({
+const handle = await startStudio({
   rivPath: "samples/studio-demo.riv",
   scenePath: "samples/studio-scene.json",
   port: 8791,
 });
-console.log("studio at", handle.url);
+rememberStudio(handle.url);
+console.log("studio at", new URL(handle.url).origin);
 
 // 実ブラウザ検証
-const exe = process.env.LOCALAPPDATA + "\\ms-playwright\\chromium-1232\\chrome-win64\\chrome.exe";
-const browser = await chromium.launch({ headless: true, executablePath: exe });
+const browser = await chromium.launch({ headless: true, chromiumSandbox: true,
+  ...(process.env.RIVE_MCP_CHROME ? { executablePath: process.env.RIVE_MCP_CHROME } : { channel: "chrome" }) });
 const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
 page.on("pageerror", (e) => console.log("PAGEERROR:", e.message));
 await page.goto(handle.url);
@@ -52,7 +55,7 @@ await page.screenshot({ path: "samples/studio-screenshot.png" });
 // 再ビルドAPI: 色を変えて反映されるか
 const modified = { ...scene };
 modified.shapes = [{ ...scene.shapes[0], fill: { color: "#e94560" } }];
-const res = await fetch("http://localhost:8791/rebuild", { method: "POST", body: JSON.stringify(modified) });
+const res = await studioFetch("http://127.0.0.1:8791/rebuild", { method: "POST", body: JSON.stringify(modified) });
 console.log("rebuild:", JSON.stringify(await res.json()));
 await page.waitForTimeout(1500);
 await page.screenshot({ path: "samples/studio-after-rebuild.png" });

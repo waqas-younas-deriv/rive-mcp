@@ -1,7 +1,7 @@
 // riv_batch_render: 複数の .riv × 複数フォーマットを1呼び出しで逐次書き出す (CI向け)。
 // 同一の RiveHost (headless Chromium 1ページ) を使い回し、1ジョブずつ順番にレンダーする。
 // 1ジョブの失敗は全体を止めず、ジョブごとの成否レポートを返す。
-import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync, type Dirent } from "node:fs";
+import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync, type Dirent, workspacePath } from "./workspaceFs.js";
 import { resolve, join, dirname, basename, extname } from "node:path";
 import type { RiveHost } from "./riveHost.js";
 import { encodeGif } from "./gif.js";
@@ -72,6 +72,11 @@ export function simpleGlob(pattern: string, cwd: string): string[] {
     rootDir = cwd;
     segments = norm.split("/").filter(Boolean);
   }
+  // Resolve the fixed prefix before walking, so absolute in-workspace globs
+  // never start enumerating the filesystem root.
+  while (segments.length && !segments[0].includes("*")) rootDir = join(rootDir, segments.shift()!);
+  rootDir = workspacePath(rootDir);
+  if (!segments.length) return existsSync(rootDir) ? [rootDir] : [];
   const results: string[] = [];
   const walk = (dir: string, segIdx: number) => {
     if (segIdx >= segments.length) return;
@@ -79,7 +84,7 @@ export function simpleGlob(pattern: string, cwd: string): string[] {
     const isLast = segIdx === segments.length - 1;
     let entries: Dirent[];
     try {
-      entries = readdirSync(dir, { withFileTypes: true });
+      entries = readdirSync(dir, { withFileTypes: true }).filter(e => !e.name.startsWith(".") && e.name !== "node_modules" && !e.isSymbolicLink());
     } catch {
       return;
     }

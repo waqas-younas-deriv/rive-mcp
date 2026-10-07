@@ -1,3 +1,5 @@
+> **Security notice for this fork:** The upstream installation commands below do not install the hardened fork. Use the [hardened setup in README.md](README.md#quick-start) and read [SECURITY.md](SECURITY.md). An explicit `RIVE_MCP_WORKSPACE` is required.
+
 # rive-mcp
 
 [English README is here](./README.md)

@@ -1,13 +1,38 @@
 {
   "name": "rive-mcp-server",
   "version": "0.6.2",
-  "mcpName": "io.github.ODU33104/rive-mcp",
   "description": "Free, editor-less MCP server for Rive: create, edit, inspect, render and live-preview .riv animations from Claude or any MCP client, plus a local Studio with a two-way AI chat panel",
-  "keywords": ["rive", "riv", "mcp", "model-context-protocol", "animation", "claude", "claude-code", "state-machine", "data-binding", "rigging", "character-rig", "svg-to-rive", "lottie", "figma", "ai-agent", "editor-alternative", "prototype", "ui-prototype"],
-  "repository": { "type": "git", "url": "git+https://github.com/ODU33104/rive-mcp.git" },
-  "homepage": "https://github.com/ODU33104/rive-mcp#readme",
-  "bugs": { "url": "https://github.com/ODU33104/rive-mcp/issues" },
-  "engines": { "node": ">=20" },
+  "keywords": [
+    "rive",
+    "riv",
+    "mcp",
+    "model-context-protocol",
+    "animation",
+    "claude",
+    "claude-code",
+    "state-machine",
+    "data-binding",
+    "rigging",
+    "character-rig",
+    "svg-to-rive",
+    "lottie",
+    "figma",
+    "ai-agent",
+    "editor-alternative",
+    "prototype",
+    "ui-prototype"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/waqas-younas-deriv/rive-mcp.git"
+  },
+  "homepage": "https://github.com/waqas-younas-deriv/rive-mcp#readme",
+  "bugs": {
+    "url": "https://github.com/waqas-younas-deriv/rive-mcp/issues"
+  },
+  "engines": {
+    "node": ">=20"
+  },
   "type": "module",
   "bin": {
     "rive-mcp": "dist/index.js"
@@ -24,19 +49,22 @@
     "test:e2e": "node test/e2e.mjs",
     "test:phase1": "node test/phase1.mjs",
     "test:phase2": "node test/phase2.mjs",
-    "test:lottie": "node test/lottie.mjs"
+    "test:lottie": "node test/lottie.mjs",
+    "test:security": "node --test test/security.mjs",
+    "test:security:browser": "node test/security-browser.mjs"
   },
   "license": "SEE LICENSE IN LICENSE",
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.12.0",
-    "@rive-app/canvas": "^2.38.5",
-    "@rive-app/canvas-advanced": "^2.42.1",
-    "gifenc": "^1.0.3",
-    "playwright-core": "^1.53.0",
-    "zod": "^3.25.0"
+    "@modelcontextprotocol/sdk": "1.32.0",
+    "@rive-app/canvas": "2.38.5",
+    "@rive-app/canvas-advanced": "2.42.1",
+    "gifenc": "1.0.3",
+    "playwright-core": "1.61.1",
+    "zod": "3.25.76"
   },
   "devDependencies": {
-    "@types/node": "^22.15.0",
-    "typescript": "^5.8.0"
-  }
+    "@types/node": "22.20.1",
+    "typescript": "5.9.3"
+  },
+  "private": true
 }

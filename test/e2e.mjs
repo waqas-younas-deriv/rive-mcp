@@ -1,3 +1,4 @@
+import { studioFetch, rememberStudio } from "./studio-client.mjs";
 // stdio JSON-RPC で実サーバーを spawn し全ツールを実呼び出しする E2E テスト
 import { spawn } from "node:child_process";
 import { existsSync, statSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
@@ -13,7 +14,7 @@ function fsMod2Sig(path) {
 
 // FIGMA_TOKEN は**必ず外して**起動する。開発機に鍵が置いてあるかどうかで e2e の
 // 結果が変わってはいけないし、テストが本物の Figma を叩いてしまうのも避ける
-const childEnv = { ...process.env };
+const childEnv = { ...process.env, RIVE_MCP_WORKSPACE: root };
 delete childEnv.FIGMA_TOKEN;
 const child = spawn(process.execPath, [join(root, "dist", "index.js")], {
   stdio: ["pipe", "pipe", "inherit"],
@@ -60,6 +61,10 @@ function notify(method, params) {
 
 async function callTool(name, args) {
   const res = await rpc("tools/call", { name, arguments: args });
+  if (name === "riv_studio" && !res.isError && !args.stop) {
+    const match = res.content.find(c => c.type === "text")?.text.match(/http:\/\/127\.0\.0\.1:\d+\/#([a-f0-9]{64})/);
+    if (match) rememberStudio(match[0]);
+  }
   return res;
 }
 
@@ -783,11 +788,11 @@ try {
     );
   }
 
-  // riv_ab_compare: two different real files (vehicles vs. cute_cat), explicit duration -> deterministic frame count
+  // riv_ab_compare: two different real files (vehicles vs. tracked cosmic scene), explicit duration -> deterministic frame count
   const abOut = join(root, "samples", "test-ab-compare.gif");
   const abCompare = await callTool("riv_ab_compare", {
     pathA: RIV,
-    pathB: join(root, "samples", "cute_cat.riv"),
+    pathB: join(root, "samples", "cosmic-journey", "cosmic.riv"),
     width: 160,
     duration: 0.5,
     fps: 8,
@@ -814,7 +819,7 @@ try {
   // riv_ab_compare: vertical layout + apng, default out path naming (alongside pathA, mentions both basenames)
   const abVertical = await callTool("riv_ab_compare", {
     pathA: RIV,
-    pathB: join(root, "samples", "cute_cat.riv"),
+    pathB: join(root, "samples", "cosmic-journey", "cosmic.riv"),
     width: 120,
     duration: 0.3,
     fps: 6,
@@ -824,7 +829,7 @@ try {
   const abVerticalText = textOf(abVertical);
   check(
     "riv_ab_compare vertical/apng not error and defaults the output path alongside pathA",
-    !abVertical.isError && abVerticalText.includes("vehicles") && abVerticalText.includes("cute_cat") && abVerticalText.includes("vertical, apng"),
+    !abVertical.isError && abVerticalText.includes("vehicles") && abVerticalText.includes("cosmic") && abVerticalText.includes("vertical, apng"),
     abVerticalText.slice(0, 300)
   );
   {
@@ -944,13 +949,13 @@ try {
 
   // riv_studio: 起動→/state→停止
   const studio = await callTool("riv_studio", { path: genPath, port: 8797 });
-  check("riv_studio starts", !studio.isError && textOf(studio).includes("http://localhost:8797/"));
-  const stateRes = await fetch("http://localhost:8797/state").then((r2) => r2.json()).catch(() => null);
+  check("riv_studio starts", !studio.isError && textOf(studio).includes("http://127.0.0.1:8797/"));
+  const stateRes = await studioFetch("http://127.0.0.1:8797/state").then((r2) => r2.json()).catch(() => null);
   check("riv_studio serves state", !!stateRes && typeof stateRes.objects === "number", JSON.stringify(stateRes)?.slice(0, 120));
-  const treeRes = await fetch("http://localhost:8797/tree").then((r2) => r2.json()).catch(() => null);
+  const treeRes = await studioFetch("http://127.0.0.1:8797/tree").then((r2) => r2.json()).catch(() => null);
   check("riv_studio serves tree", !!treeRes?.artboards?.length && treeRes.artboards[0].nodes.length > 0, JSON.stringify(treeRes)?.slice(0, 120));
   // AIへの指示: UI投稿 → riv_studio_notes で消費
-  await fetch("http://localhost:8797/notes", { method: "POST", body: JSON.stringify({ text: "テスト指示: 大きくして" }) });
+  await studioFetch("http://127.0.0.1:8797/notes", { method: "POST", body: JSON.stringify({ text: "テスト指示: 大きくして" }) });
   const notesRes = await callTool("riv_studio_notes", { port: 8797 });
   check("riv_studio_notes fetches instructions", !notesRes.isError && textOf(notesRes).includes("テスト指示"), textOf(notesRes).slice(0, 150));
   const notesEmpty = await callTool("riv_studio_notes", { port: 8797 });
@@ -959,7 +964,7 @@ try {
   // /anim + /curve: カーブエディタのHTTP面（genPathの"wobble"アニメには dot/scaleX に
   // 実際の ease-in-out CubicEaseInterpolator が入っている = riv_create 時にシフト書き込み済み）
   const genBytesBefore = fsMod.readFileSync(genPath);
-  const animRes = await fetch("http://localhost:8797/anim?artboard=Gen&animation=wobble").then((r2) => r2.json()).catch(() => null);
+  const animRes = await studioFetch("http://127.0.0.1:8797/anim?artboard=Gen&animation=wobble").then((r2) => r2.json()).catch(() => null);
   check("/anim serves tracks for the riv-only timeline", !!animRes?.tracks?.length, JSON.stringify(animRes)?.slice(0, 150));
   const scaleTrack = animRes?.tracks?.find((tr) => tr.propertyName === "scaleX");
   check("/anim resolves target name and property name", scaleTrack?.targetName === "dot", JSON.stringify(scaleTrack)?.slice(0, 200));
@@ -975,13 +980,13 @@ try {
   );
   check("/anim: editTargetIndex for frame30's segment is a real object index (the shifted keyframe)", typeof kfFrame30?.editTargetIndex === "number");
 
-  const curveRes = await fetch("http://localhost:8797/curve", {
+  const curveRes = await studioFetch("http://127.0.0.1:8797/curve", {
     method: "POST",
     body: JSON.stringify({ keyframeIndex: kfFrame30.editTargetIndex, type: "cubic", cubic: [0.1, 0.1, 0.9, 0.9] }),
   }).then((r2) => r2.json());
   check("/curve applies a cubic edit", curveRes.ok === true, JSON.stringify(curveRes));
 
-  const animAfter = await fetch("http://localhost:8797/anim?artboard=Gen&animation=wobble").then((r2) => r2.json());
+  const animAfter = await studioFetch("http://127.0.0.1:8797/anim?artboard=Gen&animation=wobble").then((r2) => r2.json());
   const scaleTrackAfter = animAfter.tracks.find((tr) => tr.propertyName === "scaleX");
   const kfFrame30After = scaleTrackAfter.keyframes.find((k) => k.frame === 30);
   const kfFrame60After = scaleTrackAfter.keyframes.find((k) => k.frame === 60);
@@ -999,22 +1004,22 @@ try {
   check("an unrelated track (sq/rotation) is unaffected by the curve edit", !!rotationTrackAfter, JSON.stringify(rotationTrackAfter)?.slice(0, 150));
 
   // /curve: hold/linear への切替
-  const curveHoldRes = await fetch("http://localhost:8797/curve", {
+  const curveHoldRes = await studioFetch("http://127.0.0.1:8797/curve", {
     method: "POST",
     body: JSON.stringify({ keyframeIndex: kfFrame30.editTargetIndex, type: "hold" }),
   }).then((r2) => r2.json());
   check("/curve applies a hold edit", curveHoldRes.ok === true, JSON.stringify(curveHoldRes));
-  const animAfterHold = await fetch("http://localhost:8797/anim?artboard=Gen&animation=wobble").then((r2) => r2.json());
+  const animAfterHold = await studioFetch("http://127.0.0.1:8797/anim?artboard=Gen&animation=wobble").then((r2) => r2.json());
   const kfFrame30Hold = animAfterHold.tracks.find((tr) => tr.propertyName === "scaleX").keyframes.find((k) => k.frame === 30);
   check("/anim reflects the hold interpolationType", kfFrame30Hold.segment.interpolationType === 0, JSON.stringify(kfFrame30Hold));
 
   // /riv-restore: Undo相当（rivのみモードのUndo/Redoが依拠するエンドポイント）でファイルを丸ごと差し戻す
-  const restoreRes = await fetch("http://localhost:8797/riv-restore", {
+  const restoreRes = await studioFetch("http://127.0.0.1:8797/riv-restore", {
     method: "POST",
     body: JSON.stringify({ bytesBase64: genBytesBefore.toString("base64") }),
   }).then((r2) => r2.json());
   check("/riv-restore accepts a snapshot", restoreRes.ok === true, JSON.stringify(restoreRes));
-  const animAfterRestore = await fetch("http://localhost:8797/anim?artboard=Gen&animation=wobble").then((r2) => r2.json());
+  const animAfterRestore = await studioFetch("http://127.0.0.1:8797/anim?artboard=Gen&animation=wobble").then((r2) => r2.json());
   const kfFrame30Restored = animAfterRestore.tracks.find((tr) => tr.propertyName === "scaleX").keyframes.find((k) => k.frame === 30);
   check(
     "/riv-restore reverts the file to the pre-edit snapshot",
@@ -1023,7 +1028,7 @@ try {
   );
 
   // /sm: SMグラフビュー用のノードグラフJSON（genPathの"Flow": entry->idle, idle->moving(active条件)）
-  const smRes = await fetch("http://localhost:8797/sm").then((r2) => r2.json()).catch(() => null);
+  const smRes = await studioFetch("http://127.0.0.1:8797/sm").then((r2) => r2.json()).catch(() => null);
   const genAb = smRes?.artboards?.find((a) => a.name === "Gen");
   const flowSm = genAb?.stateMachines?.find((s) => s.name === "Flow");
   check("/sm finds the artboard and state machine", !!flowSm, JSON.stringify(smRes)?.slice(0, 200));
@@ -1055,7 +1060,7 @@ try {
   // /sm: 到達不能state・条件なし自己遷移のハイライト用フラグ(rivLintの findings と同じファイルで再検証)
   const brokenStudio = await callTool("riv_studio", { path: lintBrokenPath, port: 8798 });
   check("riv_studio (broken SM fixture) starts", !brokenStudio.isError);
-  const smBrokenRes = await fetch("http://localhost:8798/sm").then((r2) => r2.json()).catch(() => null);
+  const smBrokenRes = await studioFetch("http://127.0.0.1:8798/sm").then((r2) => r2.json()).catch(() => null);
   const brokenSm = smBrokenRes?.artboards?.[0]?.stateMachines?.find((s) => s.name === "Broken");
   const brokenLayer = brokenSm?.layers?.[0];
   check(

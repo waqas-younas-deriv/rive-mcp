@@ -6,7 +6,9 @@
 // - rivのみモード: /tree で構造展開、/edit（editRiv）で生プロパティ編集
 // - 「AIへの指示」ボックス: UIから指示を積む → MCPツール riv_studio_notes で取得
 import { createServer, type Server } from "node:http";
-import { readFileSync, writeFileSync, existsSync, watch, mkdirSync, rmSync, unlinkSync, type FSWatcher } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, watch, type FSWatcher, workspacePath } from "./workspaceFs.js";
+import { readFileSync as readInternal, writeFileSync as writeInternal, mkdtempSync, rmSync, unlinkSync } from "node:fs";
+import { studioSecurity, MAX_BODY_BYTES } from "./studioSecurity.js";
 import { join, dirname, resolve, basename } from "node:path";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
@@ -68,8 +70,8 @@ export function resolveSceneAssets(spec: SceneSpec, baseDir: string): void {
   for (const font of spec.fonts ?? []) {
     if (!font.bytes) {
       const p = font.path ? resolve(baseDir, font.path) : join(ASSETS_DIR, "inter.ttf");
-      if (!existsSync(p)) throw new Error(`Font file not found: ${p}`);
-      font.bytes = new Uint8Array(readFileSync(p));
+      if (font.path && !existsSync(p)) throw new Error(`Font file not found: ${p}`);
+      font.bytes = new Uint8Array(font.path ? readFileSync(p) : readInternal(p));
     }
   }
 }
@@ -472,6 +474,7 @@ let current: {
 export function stopStudio(): void {
   if (current) {
     for (const w of current.watchers) w.close();
+    current.server.closeAllConnections();
     current.server.close();
     try { rmSync(current.snapDir, { recursive: true, force: true }); } catch { /* best-effort cleanup */ }
     current = null;
@@ -479,10 +482,10 @@ export function stopStudio(): void {
 }
 
 // 同一プロセス内のスタジオから未取得の指示を取り出す（MCPツール用フォールバック）
-export function takeStudioNotes(): StudioNote[] | null {
-  if (!current) return null;
-  const out = current.notes.splice(0, current.notes.length);
-  if (out.length) {
+export function takeStudioNotes(peek = false, port?: number): StudioNote[] | null {
+  if (!current || (port !== undefined && port !== current.port)) return null;
+  const out = peek ? [...current.notes] : current.notes.splice(0, current.notes.length);
+  if (out.length && !peek) {
     current.chat.push({ role: "system", text: "notes-taken", time: new Date().toISOString() });
     current.notify("notes-taken");
   }
@@ -517,19 +520,22 @@ function decodeRequestBody(buf: Buffer): string {
   }
 }
 
-export function startStudio(opts: StudioOptions): StudioHandle {
+export async function startStudio(opts: StudioOptions): Promise<StudioHandle> {
   stopStudio();
-  const rivPath = resolve(opts.rivPath);
-  const scenePath = opts.scenePath ? resolve(opts.scenePath) : undefined;
+  const rivPath = workspacePath(opts.rivPath);
+  const scenePath = opts.scenePath ? workspacePath(opts.scenePath) : undefined;
   const port = opts.port ?? 8787;
+  if (!Number.isInteger(port) || port < 1024 || port > 65535) throw new Error("Studio port must be between 1024 and 65535.");
+  const security = studioSecurity(port);
   const sseClients = new Set<import("node:http").ServerResponse>();
   const notes: StudioNote[] = [];
   const chat: StudioChatMessage[] = [];
   // スナップショット履歴: undoとは別に名前付きで .riv 全体をコピー保存する作業ディレクトリ（セッション終了時にrmSync）
-  const snapDir = join(tmpdir(), `rive-mcp-studio-${randomUUID()}`);
+  const snapDir = mkdtempSync(join(tmpdir(), "rive-mcp-studio-"));
   const snapshots: StudioSnapshot[] = [];
 
   const notify = (msg = "reload") => {
+    if (chat.length > 200) chat.splice(0, chat.length - 200);
     for (const res of sseClients) res.write(`data: ${msg}\n\n`);
   };
 
@@ -553,29 +559,48 @@ export function startStudio(opts: StudioOptions): StudioHandle {
   if (scenePath) watchFile(scenePath);
 
   const server = createServer((req, res) => {
-    const url = new URL(req.url ?? "/", `http://localhost:${port}`);
+    req.on("error", () => { /* aborted/oversized requests must not crash the process */ });
+    if (!security.authorize(req, res)) return;
+    let url: URL;
+    try { url = new URL(req.url ?? "/", security.url); }
+    catch { res.writeHead(400); res.end("Invalid request URL."); return; }
     const send = (status: number, type: string, body: string | Uint8Array) => {
       res.writeHead(status, { "Content-Type": type, "Cache-Control": "no-store" });
       res.end(body);
     };
     // チャンク境界でマルチバイト文字が割れるので、必ず全部集めてから一度にデコードする
     const readBody = (cb: (body: string) => void) => {
+      if (Number(req.headers["content-length"]) > MAX_BODY_BYTES) {
+        send(413, "text/plain", "Request exceeds the 16 MiB limit."); return;
+      }
       const chunks: Buffer[] = [];
-      req.on("data", (c: Buffer | string) => chunks.push(Buffer.isBuffer(c) ? c : Buffer.from(c, "utf8")));
-      req.on("end", () => cb(decodeRequestBody(Buffer.concat(chunks))));
+      let size = 0;
+      let rejected = false;
+      req.on("error", () => { rejected = true; });
+      req.on("data", (c: Buffer) => {
+        if (rejected) return;
+        size += c.length;
+        if (size > MAX_BODY_BYTES) {
+          rejected = true; chunks.length = 0;
+          send(413, "text/plain", "Request exceeds the 16 MiB limit.");
+          return;
+        }
+        chunks.push(c);
+      });
+      req.on("end", () => { if (!rejected) cb(decodeRequestBody(Buffer.concat(chunks))); });
     };
     try {
       if (url.pathname === "/") {
-        return send(200, "text/html; charset=utf-8", STUDIO_HTML);
+        return send(200, "text/html; charset=utf-8", STUDIO_HTML.replace("<script>", `<script nonce="${security.nonce}">`));
       }
       if (url.pathname === "/rive.js") {
-        return send(200, "text/javascript", readFileSync(join(ASSETS_DIR, "rive-canvas.js")));
+        return send(200, "text/javascript", readInternal(join(ASSETS_DIR, "rive-canvas.js")));
       }
       if (url.pathname === "/rive.wasm") {
-        return send(200, "application/wasm", readFileSync(join(ASSETS_DIR, "rive-canvas.wasm")));
+        return send(200, "application/wasm", readInternal(join(ASSETS_DIR, "rive-canvas.wasm")));
       }
       if (url.pathname === "/inter.ttf") {
-        return send(200, "font/ttf", readFileSync(join(ASSETS_DIR, "inter.ttf")));
+        return send(200, "font/ttf", readInternal(join(ASSETS_DIR, "inter.ttf")));
       }
       if (url.pathname === "/file.riv") {
         if (!existsSync(rivPath)) return send(404, "text/plain", "riv not found yet");
@@ -639,6 +664,7 @@ export function startStudio(opts: StudioOptions): StudioHandle {
         return send(200, "application/json; charset=utf-8", JSON.stringify(buildBonesJson(new Uint8Array(readFileSync(rivPath)))));
       }
       if (url.pathname === "/events") {
+        if (sseClients.size >= 8) return send(429, "text/plain", "Too many event streams.");
         res.writeHead(200, {
           "Content-Type": "text/event-stream",
           "Cache-Control": "no-store",
@@ -658,7 +684,14 @@ export function startStudio(opts: StudioOptions): StudioHandle {
               const { text, context } = JSON.parse(body) as { text?: string; context?: StudioNoteContext };
               if (typeof text === "string" && text.trim()) {
                 const note: StudioNote = { text: text.trim(), time: new Date().toISOString() };
-                if (context && typeof context === "object") note.context = context;
+                if (context && typeof context === "object") {
+                  note.context = {};
+                  for (const key of ["selection", "artboard", "animation"] as const) {
+                    if (typeof context[key] === "string") note.context[key] = context[key].slice(0, 256);
+                  }
+                  if (typeof context.timeSec === "number" && Number.isFinite(context.timeSec)) note.context.timeSec = context.timeSec;
+                }
+                if (note.text.length > 8000 || notes.length >= 100) throw new Error("Studio note limit exceeded.");
                 notes.push(note);
                 chat.push({ role: "user", text: note.text, time: note.time, context: note.context });
                 notify("chat");
@@ -685,6 +718,7 @@ export function startStudio(opts: StudioOptions): StudioHandle {
             try {
               const { text, role } = JSON.parse(body) as { text?: string; role?: string };
               if (typeof text === "string" && text.trim()) {
+                if (text.length > 8000) throw new Error("Chat message exceeds 8000 characters.");
                 chat.push({
                   role: role === "system" ? "system" : "assistant",
                   text: text.trim(),
@@ -776,7 +810,7 @@ export function startStudio(opts: StudioOptions): StudioHandle {
         readBody((body) => {
           try {
             const { frames, delayMs, loops } = JSON.parse(body) as { frames: string[]; delayMs?: number; loops?: number };
-            if (!Array.isArray(frames) || !frames.length) throw new Error("frames required");
+            if (!Array.isArray(frames) || !frames.length || frames.length > 600 || frames.some(f => typeof f !== "string")) throw new Error("1–600 base64 frames required");
             const bytes = encodeApng(frames.map((f) => new Uint8Array(Buffer.from(f, "base64"))), { delayMs, loops: loops ?? 0 });
             res.writeHead(200, { "Content-Type": "image/apng", "Cache-Control": "no-store" });
             res.end(Buffer.from(bytes));
@@ -790,7 +824,9 @@ export function startStudio(opts: StudioOptions): StudioHandle {
         readBody((body) => {
           try {
             const { frames, width, height, delayMs } = JSON.parse(body) as { frames: string[]; width: number; height: number; delayMs?: number };
-            if (!Array.isArray(frames) || !frames.length || !width || !height) throw new Error("frames/width/height required");
+            if (!Array.isArray(frames) || !frames.length || frames.length > 600 || frames.some(f => typeof f !== "string")) throw new Error("1–600 base64 frames required");
+            if (![width, height].every(v => Number.isInteger(v) && v > 0 && v <= 2048)) throw new Error("Dimensions must be integers between 1 and 2048.");
+            if (frames.some(f => Buffer.byteLength(f, "base64") !== width * height * 4)) throw new Error("RGBA frame size does not match dimensions.");
             const fps = Math.max(1, Math.round(1000 / (delayMs || 33)));
             const bytes = encodeGif(frames.map((f) => Buffer.from(f, "base64")), width, height, fps);
             res.writeHead(200, { "Content-Type": "image/gif", "Cache-Control": "no-store" });
@@ -849,10 +885,10 @@ export function startStudio(opts: StudioOptions): StudioHandle {
           try {
             if (!existsSync(rivPath)) throw new Error("riv not found yet");
             const { name } = JSON.parse(body) as { name?: string };
-            mkdirSync(snapDir, { recursive: true });
+            if (snapshots.length >= 20) throw new Error("Snapshot limit reached (20). Delete an old snapshot first.");
             const id = randomUUID();
             const file = join(snapDir, `${id}.riv`);
-            writeFileSync(file, readFileSync(rivPath));
+            writeInternal(file, readFileSync(rivPath), { mode: 0o600, flag: "wx" });
             const snap: StudioSnapshot = {
               id,
               name: name && name.trim() ? name.trim() : new Date().toLocaleString(),
@@ -878,7 +914,7 @@ export function startStudio(opts: StudioOptions): StudioHandle {
             const snap = snapshots.find((s) => s.id === id);
             if (!snap) throw new Error(`Snapshot ${id} not found`);
             suppressWatch = Date.now() + 400;
-            writeFileSync(rivPath, readFileSync(snap.file));
+            writeFileSync(rivPath, readInternal(snap.file));
             send(200, "application/json; charset=utf-8", JSON.stringify({ ok: true }));
             notify();
           } catch (e) {
@@ -911,9 +947,24 @@ export function startStudio(opts: StudioOptions): StudioHandle {
       send(500, "text/plain", e instanceof Error ? e.message : String(e));
     }
   });
-  server.listen(port);
+  server.requestTimeout = 15_000;
+  server.headersTimeout = 10_000;
+  server.maxConnections = 32;
+  try {
+    await new Promise<void>((resolveReady, reject) => {
+      server.once("error", reject);
+      server.listen(port, "127.0.0.1", () => {
+        server.removeListener("error", reject);
+        resolveReady();
+      });
+    });
+  } catch (error) {
+    for (const watcher of watchers) watcher.close();
+    rmSync(snapDir, { recursive: true, force: true });
+    throw error;
+  }
   current = { server, watchers, port, notes, chat, notify, snapDir, snapshots };
-  return { url: `http://localhost:${port}/`, port, close: stopStudio };
+  return { url: security.url, port, close: stopStudio };
 }
 
 // ---- スタジオUI（自己完結・ダークテーマ・日英対応・3ペイン） ----------------

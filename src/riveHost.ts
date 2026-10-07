@@ -125,15 +125,15 @@ async function launchBrowser(): Promise<Browser> {
   const attempts: Array<() => Promise<Browser>> = [];
   if (process.env.RIVE_MCP_CHROME) {
     attempts.push(() =>
-      chromium.launch({ headless: true, executablePath: process.env.RIVE_MCP_CHROME })
+      chromium.launch({ headless: true, chromiumSandbox: true, executablePath: process.env.RIVE_MCP_CHROME })
     );
   }
   const found = findPlaywrightChromium();
   if (found) {
-    attempts.push(() => chromium.launch({ headless: true, executablePath: found }));
+    attempts.push(() => chromium.launch({ headless: true, chromiumSandbox: true, executablePath: found }));
   }
-  attempts.push(() => chromium.launch({ headless: true, channel: "chrome" }));
-  attempts.push(() => chromium.launch({ headless: true, channel: "msedge" }));
+  attempts.push(() => chromium.launch({ headless: true, chromiumSandbox: true, channel: "chrome" }));
+  attempts.push(() => chromium.launch({ headless: true, chromiumSandbox: true, channel: "msedge" }));
 
   const errors: string[] = [];
   for (const attempt of attempts) {
@@ -165,7 +165,8 @@ export class RiveHost {
     const html = `<!DOCTYPE html><html><head><meta charset="utf-8"></head><body><script type="module">${this.pageScript}</script></body></html>`;
 
     this.browser = await launchBrowser();
-    const context = await this.browser.newContext();
+    const context = await this.browser.newContext({ serviceWorkers: "block" });
+    await context.route("**/*", route => route.abort("blockedbyclient"));
     await context.route(`${ORIGIN}/**`, (route) => {
       const url = new URL(route.request().url());
       if (url.pathname === "/" || url.pathname === "/index.html") {
